@@ -13,14 +13,29 @@ mod iso8211 {
 
     impl EntryMap {
         pub fn size_of_length(&self) -> usize {
-            (self.size_of_length as u8 - 48) as usize
+            if self.size_of_length >= 48 && self.size_of_length <= 57 {
+                return (self.size_of_length as u8 - 48) as usize;
+            } else if self.size_of_length == 32 {
+                return 0;
+            }
+            0
         }
         pub fn size_of_position(&self) -> usize {
-            (self.size_of_position as u8 - 48) as usize
+            if self.size_of_position >= 48 && self.size_of_length <= 57 {
+                return (self.size_of_position as u8 - 48) as usize;
+            } else if self.size_of_position == 32 {
+                return 0;
+            }
+            0
         }
 
         pub fn size_of_tag(&self) -> usize {
-            (self.size_of_tag as u8 - 48) as usize
+            if self.size_of_tag >= 48 && self.size_of_length <= 57 {
+                return (self.size_of_tag as u8 - 48) as usize;
+            } else if self.size_of_tag == 32 {
+                return 0;
+            }
+            0
         }
     }
 
@@ -39,9 +54,20 @@ mod iso8211 {
         pub entry_map: EntryMap,
     }
 
+    #[derive(DekuRead)]
+    pub struct FieldType {
+        data_structure: u8,
+        data_type: u8,
+        auxiliry_controls: [u8; 2],
+        printable_ft: u8,
+        printable_ut: u8,
+        escape_seq: [u8; 3],
+    }
+
     impl fmt::Debug for RawHeader {
         fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
             f.debug_struct("RawHeader")
+                .field("record_length", &self.record_length())
                 .field("interchange_level", &self.interchange_level())
                 .field("leader_identifier", &self.leader_identifier())
                 .field("in_line_code_identifier", &self.in_line_code_identifier())
@@ -69,9 +95,9 @@ mod iso8211 {
 
     #[derive(Debug)]
     pub struct DirEntry {
-        tag: String,
-        length: usize,
-        position: usize,
+        pub tag: String,
+        pub length: usize,
+        pub position: usize,
     }
 
     impl RawHeader {
@@ -129,9 +155,30 @@ mod iso8211 {
 
         let bytes_read = _rest / 8;
 
-        let remaining_size = header.base_address_of_field_data() - bytes_read - 1;
+        let mut remaining_size: usize = 0;
+
+        if header.base_address_of_field_data() > bytes_read + 1 {
+            remaining_size = header.base_address_of_field_data() - bytes_read;
+        }
 
         Ok((header, remaining_size))
+    }
+
+    pub fn read_field_types(reader: &mut File, directories: &Vec<DirEntry>) {
+        for directory in directories {
+            let (_rest, header) = FieldType::from_reader((reader, 0)).unwrap();
+
+            let mut buffer = vec![0u8; directory.length - 9];
+            reader.read_exact(&mut buffer);
+        }
+    }
+
+    pub fn read_fields(reader: &mut File, directories: &Vec<DirEntry>) {
+        for directory in directories {
+            let length = directory.length;
+            let mut buffer = vec![0u8; length];
+            reader.read_exact(&mut buffer);
+        }
     }
 
     pub fn read_directory(
@@ -139,41 +186,59 @@ mod iso8211 {
         header: &RawHeader,
         directory_size: usize,
     ) -> Result<Vec<DirEntry>, String> {
-        let num_entries = directory_size
-            / (header.entry_map.size_of_length()
-                + header.entry_map.size_of_position()
-                + header.entry_map.size_of_tag());
+        if directory_size == 0 {
+            return Err(String::from("Directory length is zero"));
+        }
+
+        let data_length = directory_size - 1;
+        let element_size = header.entry_map.size_of_length()
+            + header.entry_map.size_of_position()
+            + header.entry_map.size_of_tag();
+
+        if data_length % element_size != 0 {
+            return Err(String::from(
+                "Directory length does not add up to a whole number of directories",
+            ));
+        }
+
+        let num_entries = data_length / element_size;
 
         let mut entries: Vec<DirEntry> = Vec::new();
 
-        for n in 0..num_entries {
+        for _n in 0..num_entries {
             let mut buffer = vec![0u8; header.entry_map.size_of_tag()];
-            reader.read_exact(&mut buffer);
+
+            if let Err(err) = reader.read_exact(&mut buffer) {
+                return Err(format!("Read error: {err}"));
+            }
+
             let name = String::from_utf8_lossy(&buffer).to_string();
 
             buffer = vec![0u8; header.entry_map.size_of_length()];
-            reader.read_exact(&mut buffer);
-            let length = String::from_utf8_lossy(&buffer).parse::<usize>();
 
-            match length {
-                Ok(length) => (),
-                Err(_) => {
-                    println!("Err");
-                    return Err(String::from("Err with length"));
-                }
-            };
+            if let Err(err) = reader.read_exact(&mut buffer) {
+                return Err(format!("Read error: {err}"));
+            }
+
+            let length_string = String::from_utf8_lossy(&buffer);
+            let length = length_string.parse::<usize>();
+
+            if let Err(e) = length {
+                return Err(format!("Failed to parse length to usize: {e}"));
+            }
 
             buffer = vec![0u8; header.entry_map.size_of_position()];
-            reader.read_exact(&mut buffer);
-            let position = String::from_utf8_lossy(&buffer).parse::<usize>();
 
-            match position {
-                Ok(position) => (),
-                Err(_) => {
-                    println!("Err");
-                    return Err(String::from("Err with position"));
-                }
-            };
+            if let Err(err) = reader.read_exact(&mut buffer) {
+                return Err(format!("Read error: {err}"));
+            }
+
+            let position_string = String::from_utf8_lossy(&buffer);
+            let position = position_string.parse::<usize>();
+
+            if let Err(e) = position {
+                return Err(format!("Failed to parse position length to usize: {e}"));
+            }
 
             let entry = DirEntry {
                 tag: name,
@@ -182,6 +247,20 @@ mod iso8211 {
             };
 
             entries.push(entry);
+        }
+
+        let mut buffer = vec![0u8; 1];
+        if let Err(err) = reader.read_exact(&mut buffer) {
+            return Err(format!("Read error: {err}"));
+        }
+
+        const FIELD_TERMINATION_BYTE: u8 = 30;
+
+        if buffer[0] != FIELD_TERMINATION_BYTE {
+            return Err(format!(
+                "Directory termination character is wrong: {}. Expected: {}",
+                buffer[0] as u8, FIELD_TERMINATION_BYTE as u8
+            ));
         }
 
         Ok(entries)
@@ -197,9 +276,22 @@ mod tests {
         let mut file = std::fs::File::open("data/ENC_ROOT/US2EC03M/US2EC03M.000").unwrap();
 
         let (header, directory_size) = iso8211::read_header(&mut file).unwrap();
-        println!("{:?}", header);
+        println!("Data descriptive record: {:?}", header);
 
         let directories = iso8211::read_directory(&mut file, &header, directory_size).unwrap();
         println!("{:?}", directories);
+
+        iso8211::read_field_types(&mut file, &directories);
+
+        // Read 10 data records
+        for _n in 0..10 {
+            let (header, directory_size) = iso8211::read_header(&mut file).unwrap();
+            println!("Data record: {:?}", header);
+
+            let directories = iso8211::read_directory(&mut file, &header, directory_size).unwrap();
+            println!("{:?}", directories);
+
+            iso8211::read_fields(&mut file, &directories);
+        }
     }
 }
