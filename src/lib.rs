@@ -64,6 +64,82 @@ mod iso8211 {
         escape_seq: [u8; 3],
     }
 
+    #[derive(Debug)]
+    pub struct FieldTypeData {
+        name: String,
+        array_descriptor: String,
+        format_controls: String,
+    }
+
+    #[derive(Debug)]
+    pub enum ParseError {
+        Generic(String),
+        IOError(std::io::Error),
+        FromUtf8Error(std::string::FromUtf8Error),
+    }
+
+    impl From<std::string::FromUtf8Error> for ParseError {
+        fn from(err: std::string::FromUtf8Error) -> Self {
+            ParseError::FromUtf8Error(err)
+        }
+    }
+
+    impl From<String> for ParseError {
+        fn from(err: String) -> Self {
+            ParseError::Generic(err)
+        }
+    }
+
+    impl From<std::io::Error> for ParseError {
+        fn from(err: std::io::Error) -> Self {
+            ParseError::IOError(err)
+        }
+    }
+
+    impl fmt::Display for ParseError {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            match self {
+                ParseError::Generic(message) => write!(f, "{}", message),
+                ParseError::IOError(message) => write!(f, "{}", message),
+                ParseError::FromUtf8Error(io_error) => write!(f, "{}", io_error),
+            }
+        }
+    }
+
+    impl FieldType {
+        pub fn data_structure(&self) -> char {
+            char::from(self.data_structure)
+        }
+        pub fn data_type(&self) -> char {
+            char::from(self.data_type)
+        }
+        pub fn auxiliry_controls(&self) -> String {
+            String::from_utf8_lossy(&self.auxiliry_controls).into_owned()
+        }
+        pub fn printable_ft(&self) -> char {
+            char::from(self.printable_ft)
+        }
+        pub fn printable_ut(&self) -> char {
+            char::from(self.printable_ut)
+        }
+        pub fn escape_seq(&self) -> String {
+            String::from_utf8_lossy(&self.escape_seq).into_owned()
+        }
+    }
+
+    impl fmt::Debug for FieldType {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            f.debug_struct("FieldType")
+                .field("data_structure", &self.data_structure())
+                .field("data_type", &self.data_type())
+                .field("auxiliry_controls", &self.auxiliry_controls())
+                .field("printable_ft", &self.printable_ft())
+                .field("printable_ut", &self.printable_ut())
+                .field("escape_seq", &self.escape_seq())
+                .finish()
+        }
+    }
+
     impl fmt::Debug for RawHeader {
         fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
             f.debug_struct("RawHeader")
@@ -164,13 +240,63 @@ mod iso8211 {
         Ok((header, remaining_size))
     }
 
-    pub fn read_field_types(reader: &mut File, directories: &Vec<DirEntry>) {
-        for directory in directories {
-            let (_rest, header) = FieldType::from_reader((reader, 0)).unwrap();
+    pub fn read_field_types(
+        reader: &mut File,
+        fields: &Vec<DirEntry>,
+    ) -> Result<Vec<FieldTypeData>, ParseError> {
+        use std::io::{self, Seek, SeekFrom};
+        let initial_position = reader.stream_position()?;
 
-            let mut buffer = vec![0u8; directory.length - 9];
-            reader.read_exact(&mut buffer);
+        let length = fields.len();
+
+        let mut field_types = Vec::new();
+
+        for field in fields {
+            let current_read_pos = reader.stream_position().unwrap();
+            let expected_position = field.position as u64 + initial_position;
+
+            if current_read_pos != expected_position {
+                return Err(ParseError::Generic(
+                    "Read position is not as expected".to_string(),
+                ));
+            }
+
+            let (_rest, header) = FieldType::from_reader((reader, 0)).unwrap();
+            println!("{:#?}", header);
+
+            let mut buffer = vec![0u8; field.length - 9];
+
+            reader.read_exact(&mut buffer)?;
+
+            const DDF_UNIT_TERMINATOR: u8 = 31;
+
+            let parts = buffer.split(|&x| x == DDF_UNIT_TERMINATOR);
+
+            let mut name: String = String::new();
+            let mut array_descriptor: String = String::new();
+            let mut format_controls: String = String::new();
+
+            for (num, part) in parts.enumerate() {
+                match num {
+                    0 => name = String::from_utf8(part.to_vec())?,
+                    1 => array_descriptor = String::from_utf8(part.to_vec())?,
+                    2 => format_controls = String::from_utf8(part.to_vec())?,
+                    _ => {
+                        return Err(ParseError::Generic(String::from(
+                            "Too many parts in field type",
+                        )))
+                    }
+                }
+            }
+
+            field_types.push(FieldTypeData {
+                name: name,
+                array_descriptor: array_descriptor,
+                format_controls: format_controls,
+            });
         }
+
+        Ok(field_types)
     }
 
     pub fn read_fields(reader: &mut File, directories: &Vec<DirEntry>) {
@@ -276,22 +402,30 @@ mod tests {
         let mut file = std::fs::File::open("data/ENC_ROOT/US2EC03M/US2EC03M.000").unwrap();
 
         let (header, directory_size) = iso8211::read_header(&mut file).unwrap();
-        println!("Data descriptive record: {:?}", header);
+        println!("Data descriptive record:\n{:#?}", header);
 
         let directories = iso8211::read_directory(&mut file, &header, directory_size).unwrap();
-        println!("{:?}", directories);
+        println!("Directories:\n{:#?}", directories);
 
-        iso8211::read_field_types(&mut file, &directories);
+        let field_types = iso8211::read_field_types(&mut file, &directories);
+
+        match field_types {
+            Ok(field_types) => println!("Field types: \n{:#?}", field_types),
+            Err(err) => println!("Failed to parse field types: \n{:#?}", err),
+        }
 
         // Read 10 data records
-        for _n in 0..10 {
+
+        for n in 0..10 {
+            println!("Data record {}:\n", n);
             let (header, directory_size) = iso8211::read_header(&mut file).unwrap();
-            println!("Data record: {:?}", header);
+            println!("{:#?}", header);
 
             let directories = iso8211::read_directory(&mut file, &header, directory_size).unwrap();
-            println!("{:?}", directories);
+            println!("{:#?}", directories);
 
             iso8211::read_fields(&mut file, &directories);
+            println!("\n");
         }
     }
 }
