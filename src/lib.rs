@@ -76,6 +76,7 @@ mod iso8211 {
         Generic(String),
         IOError(std::io::Error),
         FromUtf8Error(std::string::FromUtf8Error),
+        DekuError(DekuError),
     }
 
     impl From<std::string::FromUtf8Error> for ParseError {
@@ -96,12 +97,19 @@ mod iso8211 {
         }
     }
 
+    impl From<DekuError> for ParseError {
+        fn from(err: DekuError) -> Self {
+            ParseError::DekuError(err)
+        }
+    }
+
     impl fmt::Display for ParseError {
         fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
             match self {
                 ParseError::Generic(message) => write!(f, "{}", message),
                 ParseError::IOError(message) => write!(f, "{}", message),
                 ParseError::FromUtf8Error(io_error) => write!(f, "{}", io_error),
+                ParseError::DekuError(io_error) => write!(f, "{}", io_error),
             }
         }
     }
@@ -252,7 +260,7 @@ mod iso8211 {
         let mut field_types = Vec::new();
 
         for field in fields {
-            let current_read_pos = reader.stream_position().unwrap();
+            let current_read_pos = reader.stream_position()?;
             let expected_position = field.position as u64 + initial_position;
 
             if current_read_pos != expected_position {
@@ -261,7 +269,7 @@ mod iso8211 {
                 ));
             }
 
-            let (_rest, header) = FieldType::from_reader((reader, 0)).unwrap();
+            let (_rest, header) = FieldType::from_reader((reader, 0))?;
             println!("{:#?}", header);
 
             let mut buffer = vec![0u8; field.length - 9];
@@ -311,9 +319,10 @@ mod iso8211 {
         reader: &mut File,
         header: &RawHeader,
         directory_size: usize,
-    ) -> Result<Vec<DirEntry>, String> {
+    ) -> Result<Vec<DirEntry>, ParseError> {
+
         if directory_size == 0 {
-            return Err(String::from("Directory length is zero"));
+            return Err(ParseError::Generic("Directory length is zero".to_string()));
         }
 
         let data_length = directory_size - 1;
@@ -322,8 +331,8 @@ mod iso8211 {
             + header.entry_map.size_of_tag();
 
         if data_length % element_size != 0 {
-            return Err(String::from(
-                "Directory length does not add up to a whole number of directories",
+            return Err(ParseError::Generic(
+                "Directory length does not add up to a whole number of directories".to_string(),
             ));
         }
 
@@ -335,7 +344,7 @@ mod iso8211 {
             let mut buffer = vec![0u8; header.entry_map.size_of_tag()];
 
             if let Err(err) = reader.read_exact(&mut buffer) {
-                return Err(format!("Read error: {err}"));
+                return Err(ParseError::Generic(format!("Read error: {err}")));
             }
 
             let name = String::from_utf8_lossy(&buffer).to_string();
@@ -343,27 +352,31 @@ mod iso8211 {
             buffer = vec![0u8; header.entry_map.size_of_length()];
 
             if let Err(err) = reader.read_exact(&mut buffer) {
-                return Err(format!("Read error: {err}"));
+                return Err(ParseError::Generic(format!("Read error: {err}")));
             }
 
             let length_string = String::from_utf8_lossy(&buffer);
             let length = length_string.parse::<usize>();
 
-            if let Err(e) = length {
-                return Err(format!("Failed to parse length to usize: {e}"));
+            if let Err(err) = length {
+                return Err(ParseError::Generic(format!(
+                    "Failed to parse length to usize: {err}"
+                )));
             }
 
             buffer = vec![0u8; header.entry_map.size_of_position()];
 
             if let Err(err) = reader.read_exact(&mut buffer) {
-                return Err(format!("Read error: {err}"));
+                return Err(ParseError::Generic(format!("Read error: {err}")));
             }
 
             let position_string = String::from_utf8_lossy(&buffer);
             let position = position_string.parse::<usize>();
 
-            if let Err(e) = position {
-                return Err(format!("Failed to parse position length to usize: {e}"));
+            if let Err(err) = position {
+                return Err(ParseError::Generic(format!(
+                    "Failed to parse position length to usize: {err}"
+                )));
             }
 
             let entry = DirEntry {
