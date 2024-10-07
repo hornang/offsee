@@ -280,9 +280,9 @@ mod iso8211 {
 
             let parts = buffer.split(|&x| x == DDF_UNIT_TERMINATOR);
 
-            let mut name: String = String::new();
-            let mut array_descriptor: String = String::new();
-            let mut format_controls: String = String::new();
+            let mut name = String::new();
+            let mut array_descriptor = String::new();
+            let mut format_controls = String::new();
 
             for (num, part) in parts.enumerate() {
                 match num {
