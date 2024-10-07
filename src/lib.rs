@@ -269,10 +269,11 @@ mod iso8211 {
                 ));
             }
 
-            let (_rest, header) = FieldType::from_reader((reader, 0))?;
+            let (bits_read, header) = FieldType::from_reader((reader, 0))?;
             println!("{:#?}", header);
+            let bytes_read = bits_read / 8;
 
-            let mut buffer = vec![0u8; field.length - 9];
+            let mut buffer = vec![0u8; field.length - bytes_read - 1];
 
             reader.read_exact(&mut buffer)?;
 
