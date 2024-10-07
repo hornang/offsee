@@ -302,6 +302,15 @@ mod iso8211 {
                 array_descriptor: array_descriptor,
                 format_controls: format_controls,
             });
+
+            let mut byte = 0u8;
+            reader.read_exact(std::slice::from_mut(&mut byte))?;
+
+            const FIELD_TERMINATION_BYTE: u8 = 30;
+
+            if byte != FIELD_TERMINATION_BYTE {
+                return Err(ParseError::Generic(format!("Directory termination character is wrong: 0x{byte:x}. Expected: 0x{FIELD_TERMINATION_BYTE:x}")));
+            }
         }
 
         Ok(field_types)
@@ -388,18 +397,13 @@ mod iso8211 {
             entries.push(entry);
         }
 
-        let mut buffer = vec![0u8; 1];
-        if let Err(err) = reader.read_exact(&mut buffer) {
-            return Err(format!("Read error: {err}"));
-        }
+        let mut byte = 0u8;
+        reader.read_exact(std::slice::from_mut(&mut byte))?;
 
         const FIELD_TERMINATION_BYTE: u8 = 30;
 
-        if buffer[0] != FIELD_TERMINATION_BYTE {
-            return Err(format!(
-                "Directory termination character is wrong: {}. Expected: {}",
-                buffer[0] as u8, FIELD_TERMINATION_BYTE as u8
-            ));
+        if byte != FIELD_TERMINATION_BYTE {
+            return Err(ParseError::Generic(format!("Directory termination character is wrong: 0x{byte:x}. Expected: {FIELD_TERMINATION_BYTE:x}")));
         }
 
         Ok(entries)
